@@ -38,3 +38,5 @@ Os guias são mapas de navegação, não novas cópias dos contratos técnicos. 
 - [PowerPoint feature checklist](parity-checklist.md)
 - [Slide show and presenter view: parity with PowerPoint](slideshow-parity.md)
 - [UI parity with PowerPoint](ui-parity.md)
+
+- [Creative Workshop: origem, identidade e publicação](branding.md)

@@ -14,10 +14,6 @@ artwork. The ribbon and menu icons stay original drawings.
 
 | Asset | Author | Source | Licence | Used for |
 |---|---|---|---|---|
-| `docs/brand/artcraft-logo.svg`, `docs/brand/artcraft-logo.png` | ArtCraft Team | ArtCraft brand kit (project owner) | ArtCraft trademark, `docs/brand/LICENSE-brand.txt` (not open source) | README header |
-| `docs/brand/artcraft-logo-white.svg`, `docs/brand/artcraft-logo-white.png` | ArtCraft Team | ArtCraft brand kit | ArtCraft trademark, `docs/brand/LICENSE-brand.txt` | README header (dark mode) |
-| `docs/brand/artcraft-mark.svg`, `docs/brand/artcraft-mark.png` | ArtCraft Team | ArtCraft brand kit | ArtCraft trademark, `docs/brand/LICENSE-brand.txt` | README footer, About |
-| `docs/brand/artcraft-mark-black.svg`, `docs/brand/artcraft-mark-black.png` | ArtCraft Team | ArtCraft brand kit | ArtCraft trademark, `docs/brand/LICENSE-brand.txt` | Mark for light backgrounds |
 | `docs/brand/LICENSE-brand.txt` | ArtCraft Team | craftrules `standards/license-files` | — (licence text) | Terms for the ArtCraft marks |
 | `assets/app-icon/deckcraft-1024.png`, `assets/app-icon/hicolor/*/apps/ai.storyteller.deckcraft.png` | DeckCraft contributors | rendered by DeckCraft from `assets/app-icon/icon-source.deckcraft` (shapes only) | MIT OR Apache-2.0 | Placeholder app icon (presentation board) until the mascot icon is drawn |
 | `packaging/macos/dmg/background.svg` | @XusBadia | DeckCraft macOS DMG window background, original work for this repository (2026-10-08), derived from the DeckCraft app icon `assets/app-icon/deckcraft-1024.png` (referenced via `<image>`, not copied); text is outlined Inter / JetBrains Mono glyph paths | MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`) | Finder window of the macOS DMG; `packaging/macos/dmg/generate.py` renders it to `background.tiff` |
@@ -91,3 +87,7 @@ in craft-fonts, including the LXGW Reserved Font Names and original Klee notice.
 | Family | Author | Source | Licence | Use |
 |---|---|---|---|---|
 | LXGW WenKai Lite Regular 1.530 | LXGW; original Klee Project Authors / Fontworks | https://github.com/lxgw/LxgwWenKai-Lite/tree/b712c83d98acf977bacfb7fb010207802808bda9 | OFL-1.1, unmodified upstream font | Native Chinese glyph fallback after existing UI faces; font SHA256 `f799a538a3355877e597a0ae04050e897932c9ae7689eb9227c2953c5dd549ea`, OFL SHA256 `0333a85fe077b6849f8e417acc44e8bd879442ceb681e271acf93e2d57fd4e2e` |
+
+## Independent edition branding
+
+Creative Workshop excludes the restricted ArtCraft logo/mark files. The original trademark terms and copyright credits are retained. See [branding policy](docs/branding.md).
