@@ -28,7 +28,7 @@ use std::sync::Arc;
 use crate::bytes::Bytes;
 use crate::canvas::Raw;
 use crate::canvas::{BS_NULL, BS_SOLID, Brush, Canvas, LogFont, PS_NULL, Pen, RawTile, Xform, hatch_tile, mul};
-use crate::cliprect::{clip_polygon, convex, flatten, ops_bbox, pts_bbox, rect_poly};
+use crate::cliprect::{MAX_AREA_CLIP_WORK, clip_polygon_within, convex, flatten, ops_bbox, pts_bbox, rect_poly};
 use crate::dib::Rgba;
 use crate::geom::{Op, P};
 use crate::text::{ETO_CLIPPED, Font};
@@ -50,6 +50,8 @@ const MAX_CHARS: usize = 32_768;
 const MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
 /// Nesting depth of region nodes.
 const MAX_REGION_DEPTH: usize = 32;
+/// Region nodes and path points parsed together, including nodes in sibling branches.
+const MAX_REGION_WORK: usize = MAX_POINTS;
 
 const TA_RIGHT: u32 = 2;
 const TA_CENTER: u32 = 6;
@@ -93,7 +95,7 @@ impl Fill {
                 if w == 0.0 || h == 0.0 {
                     return [0, 0, 0, 0];
                 }
-                if *wrap == 4 && !(0.0..w).contains(&p.0) || *wrap == 4 && !(0.0..h).contains(&p.1) {
+                if *wrap == 4 && !((0.0..w).contains(&p.0) && (0.0..h).contains(&p.1)) {
                     return [0, 0, 0, 0];
                 }
                 let x = (p.0.rem_euclid(w) as usize).min(img.w - 1);
@@ -286,10 +288,30 @@ impl Plus {
         if !self.active {
             return None;
         }
+        let done = match typ {
+            0x4008 => self.object(flags, r, cv.used().saturating_add(self.clip_bytes())),
+            0x4009 | 0x4013 | 0x401A..=0x401C | 0x4036 => self.record_image_text_region(cv, typ, flags, r),
+            0x4025..=0x4035 => self.record_state(cv, typ, flags, r),
+            0x4010..=0x4012 | 0x4016..=0x4019 => self.record_curve(cv, typ, flags, r),
+            _ => self.record_shape(cv, typ, flags, r),
+        };
+        // What this player retains (objects, a continued object's pieces, the current and saved
+        // clips) shares the canvas's byte budget; clip changes are charged as they happen.
+        cv.hold(self.object_bytes.saturating_add(self.partial.as_ref().map_or(0, |p| p.data.len())).saturating_add(self.clip_bytes()));
+        done
+    }
+
+    /// Bytes of the current clip and of every saved one.
+    fn clip_bytes(&self) -> usize {
+        let area = |a: &Area| a.as_ref().map_or(0, |v| v.len().saturating_mul(std::mem::size_of::<P>()));
+        self.stack.iter().map(|s| area(&s.clip)).fold(area(&self.clip), usize::saturating_add)
+    }
+
+    /// Rectangle, polygon, ellipse and path records.
+    fn record_shape(&mut self, cv: &mut Canvas, typ: u16, flags: u16, r: Bytes) -> Option<()> {
         let compressed = flags & 0x4000 != 0;
         let id = usize::from(flags & 0xFF);
         match typ {
-            0x4008 => self.object(flags, r),
             0x400A => {
                 let fill = self.brush_of(flags, r.u32(0)?)?;
                 let p = self.painter();
@@ -348,6 +370,15 @@ impl Plus {
                 self.painter().stroke(cv, &ops, pen);
                 Some(())
             }
+            _ => None,
+        }
+    }
+
+    /// Curve, bezier and arc records.
+    fn record_curve(&mut self, cv: &mut Canvas, typ: u16, flags: u16, r: Bytes) -> Option<()> {
+        let compressed = flags & 0x4000 != 0;
+        let id = usize::from(flags & 0xFF);
+        match typ {
             0x4019 => {
                 let pen = self.pen(id)?;
                 let pts = points(r, 4, r.u32(0)? as usize, compressed)?;
@@ -380,6 +411,29 @@ impl Plus {
                 self.painter().stroke(cv, &curve_ops(&pts, tension, false, offset, segments), pen);
                 Some(())
             }
+            0x4010 => {
+                let fill = self.brush_of(flags, r.u32(0)?)?;
+                let [start, sweep] = floats::<2>(r, 4)?;
+                let rect = *rects(r, 12, 1, compressed)?.first()?;
+                self.painter().fill(cv, &arc_ops(rect, start, sweep, true), &fill);
+                Some(())
+            }
+            0x4011 | 0x4012 => {
+                let pen = self.pen(id)?;
+                let [start, sweep] = floats::<2>(r, 0)?;
+                let rect = *rects(r, 8, 1, compressed)?.first()?;
+                self.painter().stroke(cv, &arc_ops(rect, start, sweep, typ == 0x4011), pen);
+                Some(())
+            }
+            _ => None,
+        }
+    }
+
+    /// Clear, region fill, image and text records.
+    fn record_image_text_region(&mut self, cv: &mut Canvas, typ: u16, flags: u16, r: Bytes) -> Option<()> {
+        let compressed = flags & 0x4000 != 0;
+        let id = usize::from(flags & 0xFF);
+        match typ {
             // Clear: the whole picture in one colour, whatever the clip (a transparent clear
             // leaves nothing to draw).
             0x4009 => {
@@ -419,6 +473,14 @@ impl Plus {
             }
             0x401C => self.draw_string(cv, flags, r),
             0x4036 => self.draw_driver_string(cv, flags, r),
+            _ => None,
+        }
+    }
+
+    /// Save / restore, transform and clip records.
+    fn record_state(&mut self, cv: &mut Canvas, typ: u16, flags: u16, r: Bytes) -> Option<()> {
+        let id = usize::from(flags & 0xFF);
+        match typ {
             0x4025 | 0x4028 => r.u32(0).map(|i| self.push(i)),
             0x4027 => r.u32(24).map(|i| self.push(i)),
             0x4026 | 0x4029 => r.u32(0).map(|i| self.pop(i)),
@@ -470,20 +532,6 @@ impl Plus {
                 }
                 Some(())
             }
-            0x4010 => {
-                let fill = self.brush_of(flags, r.u32(0)?)?;
-                let [start, sweep] = floats::<2>(r, 4)?;
-                let rect = *rects(r, 12, 1, compressed)?.first()?;
-                self.painter().fill(cv, &arc_ops(rect, start, sweep, true), &fill);
-                Some(())
-            }
-            0x4011 | 0x4012 => {
-                let pen = self.pen(id)?;
-                let [start, sweep] = floats::<2>(r, 0)?;
-                let rect = *rects(r, 8, 1, compressed)?.first()?;
-                self.painter().stroke(cv, &arc_ops(rect, start, sweep, typ == 0x4011), pen);
-                Some(())
-            }
             _ => None,
         }
     }
@@ -521,7 +569,7 @@ impl Plus {
         Some(())
     }
 
-    fn object(&mut self, flags: u16, r: Bytes) -> Option<()> {
+    fn object(&mut self, flags: u16, r: Bytes, canvas_used: usize) -> Option<()> {
         let id = usize::from(flags & 0xFF);
         let kind = (flags >> 8) & 0x7F;
         if flags & 0x8000 != 0 {
@@ -537,7 +585,7 @@ impl Plus {
             p.data.extend_from_slice(&chunk[..chunk.len().min(room)]);
             if p.data.len() >= p.total {
                 let obj = parse_object(p.kind, Bytes(&p.data));
-                self.store(p.id, obj);
+                self.store(p.id, obj, canvas_used);
             } else {
                 self.partial = Some(p);
             }
@@ -551,22 +599,23 @@ impl Plus {
             let room = p.total.saturating_sub(p.data.len());
             p.data.extend_from_slice(&r.0[..r.0.len().min(room)]);
             let obj = parse_object(kind, Bytes(&p.data));
-            self.store(id, obj);
+            self.store(id, obj, canvas_used);
             return Some(());
         }
         let obj = parse_object(kind, r);
-        self.store(id, obj);
+        self.store(id, obj, canvas_used);
         Some(())
     }
 
-    fn store(&mut self, id: usize, obj: Option<Obj>) {
+    /// `canvas_used` is what the canvas already retains: objects and items share one budget.
+    fn store(&mut self, id: usize, obj: Option<Obj>, canvas_used: usize) {
         let Some(slot) = self.objects.get_mut(id) else { return };
         if let Some(old) = slot.take() {
             self.object_bytes = self.object_bytes.saturating_sub(Self::obj_cost(&old));
         }
         if let Some(new_obj) = obj {
             let cost = Self::obj_cost(&new_obj);
-            if self.object_bytes.saturating_add(cost) <= crate::MAX_BYTES {
+            if self.object_bytes.saturating_add(cost).saturating_add(canvas_used) <= crate::MAX_BYTES {
                 self.object_bytes += cost;
                 *slot = Some(new_obj);
             }
@@ -577,7 +626,7 @@ impl Plus {
         match obj {
             Obj::Image(img) => match img.as_ref() {
                 ImageData::Bitmap(rgba) => rgba.px.len(),
-                ImageData::Meta(pic) => pic.items.len().saturating_mul(128),
+                ImageData::Meta(pic) => picture_cost(&pic.items),
             },
             Obj::Brush(Fill::Texture { img, .. }) => img.px.len(),
             Obj::Path(ops) => ops.len().saturating_mul(std::mem::size_of::<Op>()),
@@ -1070,12 +1119,14 @@ fn path(r: Bytes) -> Option<Vec<Op>> {
 /// A region object as a convex area in world units (non-convex parts become their bounding
 /// rectangle).
 fn region(r: Bytes) -> Option<Obj> {
-    region_node(r, 8, 0).map(|(a, _)| Obj::Region(a))
+    let mut work = 0;
+    region_node(r, 8, 0, &mut work).map(|(a, _)| Obj::Region(a))
 }
 
 /// One region node at `off`: its area and its length in bytes.
-fn region_node(r: Bytes, off: usize, depth: usize) -> Option<(Area, usize)> {
-    if depth > MAX_REGION_DEPTH {
+fn region_node(r: Bytes, off: usize, depth: usize, work: &mut usize) -> Option<(Area, usize)> {
+    *work = work.checked_add(1)?;
+    if depth > MAX_REGION_DEPTH || *work > MAX_REGION_WORK {
         return None;
     }
     match r.u32(off)? {
@@ -1085,14 +1136,23 @@ fn region_node(r: Bytes, off: usize, depth: usize) -> Option<(Area, usize)> {
         }
         0x1000_0001 => {
             let size = r.u32(off + 4)? as usize;
-            let area = path(r.tail(off + 8)?).map(|ops| area_of_ops(&ops)).unwrap_or_default();
+            if size < 12 {
+                return None;
+            }
+            let data = Bytes(r.slice(off + 8, size)?);
+            let points = (data.u32(4)? as usize).min(MAX_POINTS);
+            *work = work.checked_add(points)?;
+            if *work > MAX_REGION_WORK {
+                return None;
+            }
+            let area = area_of_ops(&path(data)?);
             Some((Some(area), 8usize.checked_add(size)?))
         }
         0x1000_0002 => Some((Some(Vec::new()), 4)),
         0x1000_0003 => Some((None, 4)),
         mode @ 0..=5 => {
-            let (a, la) = region_node(r, off + 4, depth + 1)?;
-            let (b, lb) = region_node(r, off.checked_add(4 + la)?, depth + 1)?;
+            let (a, la) = region_node(r, off + 4, depth + 1, work)?;
+            let (b, lb) = region_node(r, off.checked_add(4 + la)?, depth + 1, work)?;
             let out = match mode {
                 0 => b,
                 1 => area_intersect(a, b),
@@ -1121,7 +1181,13 @@ fn area_of_ops(ops: &[Op]) -> Vec<P> {
 fn area_intersect(a: Area, b: Area) -> Area {
     match (a, b) {
         (None, x) | (x, None) => x,
-        (Some(a), Some(b)) if a.len() >= 3 && b.len() >= 3 => Some(convex(&clip_polygon(&a, &b)).unwrap_or_default()),
+        (Some(a), Some(b)) if a.len() >= 3 && b.len() >= 3 => {
+            // Out of work: keep the area so far rather than call the region empty.
+            match clip_polygon_within(&a, &b, &mut { MAX_AREA_CLIP_WORK }) {
+                Some(p) => Some(convex(&p).unwrap_or_default()),
+                None => Some(a),
+            }
+        }
         _ => Some(Vec::new()),
     }
 }
@@ -1225,6 +1291,33 @@ fn metafile(r: Bytes) -> Option<Picture> {
     let pic = crate::parse(data).ok();
     NESTING.with(|n| n.set(depth));
     pic.filter(|p| p.width > 0.0 && p.height > 0.0)
+}
+
+/// Bytes the items of a nested picture own: path segments, clip rectangles, pixels and text, with
+/// each shared pattern tile counted once.
+fn picture_cost(items: &[crate::Item]) -> usize {
+    use crate::Item;
+    let region = |r: &Option<Vec<[f32; 4]>>| r.as_ref().map_or(0, |v| v.len().saturating_mul(16));
+    let mut tiles = std::collections::HashSet::new();
+    let mut total = 0usize;
+    for item in items {
+        let own = match item {
+            Item::Path { segs, region: r, .. } => segs.len().saturating_mul(std::mem::size_of::<crate::Seg>()).saturating_add(region(r)),
+            Item::Bitmap { rgba, region: r, .. } => rgba.len().saturating_add(region(r)),
+            Item::Pattern { segs, tile, region: r, .. } => {
+                let tile_bytes = if tiles.insert(Arc::as_ptr(tile)) { tile.rgba.len() } else { 0 };
+                segs.len().saturating_mul(std::mem::size_of::<crate::Seg>()).saturating_add(tile_bytes).saturating_add(region(r))
+            }
+            Item::Text(t) => t
+                .text
+                .len()
+                .saturating_add(t.dx.len().saturating_mul(std::mem::size_of::<f32>()))
+                .saturating_add(t.font.family.len())
+                .saturating_add(region(&t.region)),
+        };
+        total = total.saturating_add(128).saturating_add(own);
+    }
+    total
 }
 
 fn bitmap(r: Bytes) -> Option<Rgba> {
@@ -1503,4 +1596,46 @@ fn wrap_line(line: &[u16], width: f64, em: f64) -> Vec<Vec<u16>> {
     cur.truncate(n);
     out.push(cur);
     out
+}
+
+#[cfg(test)]
+mod cost_tests {
+    use super::*;
+    use crate::{Item, Seg, Tile};
+
+    #[test]
+    fn a_shared_pattern_tile_is_charged_once() {
+        let tile = Arc::new(Tile { width: 512, height: 512, rgba: vec![0; 1 << 20], cell: [1.0, 1.0], origin: [0.0, 0.0] });
+        let item = || Item::Pattern { segs: vec![Seg::Move(0.0, 0.0), Seg::Line(1.0, 1.0)], even_odd: false, tile: tile.clone(), region: None };
+        let items: Vec<Item> = (0..257).map(|_| item()).collect();
+        assert!(picture_cost(&items) < 2 << 20, "{}", picture_cost(&items));
+    }
+
+    #[test]
+    fn pieces_of_a_continued_object_count_against_the_shared_budget() {
+        let (mut plus, mut cv) = (Plus::new(), Canvas::new());
+        plus.active = true;
+        // Image object (kind 5), id 0, continued: 1000 bytes announced, 100 delivered.
+        let mut rec = 1000u32.to_le_bytes().to_vec();
+        rec.extend([0u8; 100]);
+        plus.record(&mut cv, 0x4008, 0x8000 | (5 << 8), Bytes(&rec));
+        assert_eq!(cv.held(), 100);
+    }
+
+    #[test]
+    fn current_and_saved_clips_count_against_the_shared_budget() {
+        let (mut plus, mut cv) = (Plus::new(), Canvas::new());
+        plus.active = true;
+        let pts = vec![(0.0, 0.0); 1000];
+        plus.clip = Some(pts.clone());
+        plus.stack.push(Saved { id: 1, world: IDENTITY, page: 1.0, clip: Some(pts) });
+        // Any record refreshes the held count (an unknown record draws nothing).
+        plus.record(&mut cv, 0x40FF, 0, Bytes(&[]));
+        assert_eq!(cv.held(), 2 * 1000 * std::mem::size_of::<P>());
+        // Restoring the saved state releases the charge of what it dropped.
+        plus.stack.clear();
+        plus.clip = None;
+        plus.record(&mut cv, 0x40FF, 0, Bytes(&[]));
+        assert_eq!(cv.held(), 0);
+    }
 }
