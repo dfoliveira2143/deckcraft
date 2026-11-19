@@ -1,7 +1,10 @@
 use super::galleries::{Fl, kurbo_flatten, shapes_gallery};
 use super::home::layout_menu;
 use super::view::zoom_menu;
-use super::*;
+use super::{
+    Color32, CornerRadius, Icon, Rect, Sense, SlideApp, Stroke, Tokens, Ui, big, big_button, big_button_ex, enabled, group, json, menu_item, pos2,
+    run, tip, vec2,
+};
 
 /// Photo Album is a split button: the main click starts a new album, the arrow edits one.
 fn photo_album_button(app: &mut SlideApp, ui: &mut Ui) {
@@ -69,7 +72,7 @@ pub(super) fn insert(app: &mut SlideApp, ui: &mut Ui) {
         });
         let r = big_button(ui, Icon::Icons, "Icons", enabled(app, "insert.icon"));
         egui::Popup::menu(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(340.0).show(|ui| icon_library(app, ui));
-        big(app, ui, Icon::SmartArt, "SmartArt", "app.dialog", json!({"id": "smartart"}));
+        big(app, ui, Icon::SmartArt, "Diagram", "app.dialog", json!({"id": "smartart"}));
         let r = big_button(ui, Icon::Chart, "Chart", enabled(app, "insert.chart"));
         egui::Popup::menu(&r).show(|ui| {
             for k in chart_menu_types() {
@@ -108,10 +111,10 @@ pub(super) fn insert(app: &mut SlideApp, ui: &mut Ui) {
     group(ui, |ui| {
         big(app, ui, Icon::TextBox, "Text\nBox", "insert.textBox", json!({}));
         big(app, ui, Icon::HeaderFooter, "Header &\nFooter", "app.dialog", json!({"id": "headerFooter"}));
-        let r = big_button(ui, Icon::WordArt, "WordArt", enabled(app, "insert.wordArt"));
+        let r = big_button(ui, Icon::WordArt, "Decorative Text", enabled(app, "insert.wordArt"));
         egui::Popup::menu(&r).show(|ui| {
             for i in 0..6 {
-                if ui.button(format!("WordArt style {}", i + 1)).clicked() {
+                if ui.button(format!("Decorative Text style {}", i + 1)).clicked() {
                     run(app, "insert.wordArt", json!({"style": i}));
                 }
             }
