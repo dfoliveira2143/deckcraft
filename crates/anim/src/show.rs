@@ -47,7 +47,8 @@ pub enum LinkJump {
 
 /// Where a slide show is. Besides the current position it remembers what was played on every slide
 /// the show has visited (main steps, triggered sequences), so a slide reached again by a link or
-/// the arrow keys looks the way it was left, as in PowerPoint.
+/// by going back looks the way it was left, as in PowerPoint. Going forward to a slide starts it
+/// over, so its animations play again (#2090).
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct ShowState {
     /// Index into `presentation.slides`.
@@ -58,6 +59,9 @@ pub struct ShowState {
     pub playing: bool,
     /// On the end screen.
     pub ended: bool,
+    /// The current slide was reached by going back (← / Backspace), so the show plays the
+    /// transition of the slide it left, in reverse, as PowerPoint does (#1531).
+    pub backward: bool,
     /// The show has entered a slide (so `slide` and `step` are meaningful and can be saved).
     active: bool,
     /// The time of the last [`ShowState::tick`] (seconds), for the triggered animations' clocks.
@@ -208,6 +212,7 @@ impl ShowState {
         self.active = true;
         self.slide = i;
         self.ended = false;
+        self.backward = false;
         // Time spent elsewhere never counts for this slide's triggered animations.
         self.last_now = None;
         let steps = ShowState::steps(pres, i);
@@ -220,6 +225,14 @@ impl ShowState {
             self.step = 0;
             self.playing = !pres.show.without_animation && ShowState::timeline(pres, i).step_is_auto(0);
         }
+    }
+
+    /// Advance to slide `i`: it starts over, as if the show had not been there, so its
+    /// animations play again (#2090). Links and Back keep a slide as it was left.
+    fn enter_forward(&mut self, pres: &Presentation, i: usize) {
+        self.leave(pres);
+        self.runs.remove(&i);
+        self.enter(pres, i);
     }
 
     fn next_index(&self, pres: &Presentation) -> Option<usize> {
@@ -267,12 +280,12 @@ impl ShowState {
         }
         match self.next_index(pres) {
             Some(i) => {
-                self.enter(pres, i);
+                self.enter_forward(pres, i);
                 ShowAction::Slide(i)
             }
             None if looping(pres) => match self.visit(pres).first() {
                 Some(&i) => {
-                    self.enter(pres, i);
+                    self.enter_forward(pres, i);
                     ShowAction::Slide(i)
                 }
                 None => {
@@ -309,6 +322,7 @@ impl ShowState {
             }
             self.step = ShowState::steps(pres, self.slide);
             self.playing = false;
+            self.backward = false;
             return ShowAction::Slide(self.slide);
         }
         // #844: undoing the automatic first step left the slide as before it appeared, and the show
@@ -337,6 +351,7 @@ impl ShowState {
                     self.step = ShowState::steps(pres, i);
                     self.playing = false;
                 }
+                self.backward = true;
                 ShowAction::Slide(i)
             }
             None => ShowAction::None,
