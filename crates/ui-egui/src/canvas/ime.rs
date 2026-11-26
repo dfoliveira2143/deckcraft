@@ -1,4 +1,4 @@
-use super::*;
+use super::{Rect, SlideApp, Ui, Xf, screen_rect, vec2};
 
 /// Where an input method composes for the slide (#101), on screen: at the insertion point while
 /// editing text, or over the one selected shape (typing on it starts editing). `None` when there is
@@ -34,7 +34,7 @@ pub fn ime_area(app: &SlideApp, xf: Xf) -> Option<Rect> {
 /// has settled.
 pub(super) fn ime_output(app: &mut SlideApp, ui: &Ui, xf: Xf) {
     let ctx = ui.ctx();
-    if ctx.memory(|m| m.focused().is_some()) || app.dialog.as_ref().is_some_and(|d| d.modal()) || app.palette.is_some() || app.backstage_open() {
+    if crate::framework::widget_has_keyboard(ctx) || app.dialog.as_ref().is_some_and(|d| d.modal()) || app.palette.is_some() || app.backstage_open() {
         return;
     }
     let Some(r) = ime_area(app, xf) else { return };
